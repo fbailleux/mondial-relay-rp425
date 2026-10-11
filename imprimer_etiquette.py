@@ -3,12 +3,14 @@
 
 Usage :
     imprimer_etiquette.py [fichier.pdf] [--sans-impression] [--sans-dialogue]
+                          [--sortie DOSSIER] [--json]
 
 Sans fichier : prend le PDF « bon d'envoi » le plus récent de ~/Downloads.
 Étapes : repérer le cadre de l'étiquette, générer le ZPL compressé (RLE),
 afficher l'aperçu, demander confirmation, imprimer.
 """
 import glob
+import json
 import os
 import re
 import shutil
@@ -24,7 +26,8 @@ DOSSIER = os.path.dirname(os.path.abspath(__file__))
 SORTIE = os.path.join(DOSSIER, "dernier")
 
 
-def outil(nom):
+def outil(nom: str) -> str:
+    """Renvoie le chemin d'un outil poppler, sinon quitte."""
     chemin = shutil.which(nom) or os.path.join("/opt/homebrew/bin", nom)
     if not os.path.exists(chemin):
         chemin = os.path.join("/usr/local/bin", nom)
@@ -33,7 +36,7 @@ def outil(nom):
     return chemin
 
 
-def dialogue(texte, boutons, defaut, titre="Étiquette RP425"):
+def dialogue(texte: str, boutons: list, defaut: str, titre: str = "Étiquette RP425"):
     """Renvoie le bouton cliqué, ou None si annulé."""
     liste = ", ".join('"%s"' % b for b in boutons)
     script = 'display dialog "%s" with title "%s" buttons {%s} default button "%s" cancel button "%s"' % (
@@ -45,7 +48,7 @@ def dialogue(texte, boutons, defaut, titre="Étiquette RP425"):
     return m.group(1).strip() if m else None
 
 
-def erreur(texte):
+def erreur(texte: str):
     sys.stderr.write(texte + "\n")
     if "--sans-dialogue" not in sys.argv:
         subprocess.run(["osascript", "-e",
@@ -54,7 +57,7 @@ def erreur(texte):
     sys.exit(1)
 
 
-def trouver_pdf(args):
+def trouver_pdf(args: list) -> str:
     for a in args:
         if not a.startswith("--") and a.lower().endswith(".pdf"):
             return a
@@ -65,14 +68,24 @@ def trouver_pdf(args):
     return max(candidats, key=os.path.getmtime)
 
 
-def pgm(chemin):
+def valeur_arg(args: list, option: str, defaut):
+    """Renvoie la valeur d'une option ``--option valeur`` (ou ``--option=valeur``)."""
+    for i, a in enumerate(args):
+        if a == option and i + 1 < len(args):
+            return args[i + 1]
+        if a.startswith(option + "="):
+            return a.split("=", 1)[1]
+    return defaut
+
+
+def pgm(chemin: str):
     d = open(chemin, "rb").read()
     m = re.match(rb"P5\s+(\d+)\s+(\d+)\s+255\s", d)
     w, h = int(m.group(1)), int(m.group(2))
     return w, h, d[len(d) - w * h:]
 
 
-def repérer_cadre(pdf, tmp):
+def repérer_cadre(pdf: str, tmp: str):
     """Cadre de l'étiquette en pixels à 288 dpi : (x0, y0, largeur, page_w_pt)."""
     base = os.path.join(tmp, "page")
     subprocess.run([outil("pdftoppm"), "-r", "288", "-gray", "-singlefile", pdf, base], check=True)
@@ -101,7 +114,7 @@ def repérer_cadre(pdf, tmp):
     return x0, y0, largeur, w * 72 / 288
 
 
-def rendre(pdf, tmp, nom, dpi, x, y, lw, lh):
+def rendre(pdf: str, tmp: str, nom: str, dpi: float, x: int, y: int, lw: int, lh: int):
     base = os.path.join(tmp, nom)
     subprocess.run([outil("pdftoppm"), "-r", repr(dpi), "-x", str(x), "-y", str(y), "-W", str(lw), "-H", str(lh),
                     "-gray", "-singlefile", pdf, base], check=True)
@@ -109,7 +122,7 @@ def rendre(pdf, tmp, nom, dpi, x, y, lw, lh):
     return w, h, img
 
 
-def binariser(g, gw, gh, seuil, marge=0):
+def binariser(g, gw: int, gh: int, seuil: int, marge: int = 0) -> bytearray:
     b = bytearray(W * H)
     for y in range(min(gh, H - marge)):
         lig = g[y * gw:(y + 1) * gw]
@@ -120,14 +133,14 @@ def binariser(g, gw, gh, seuil, marge=0):
     return b
 
 
-def cadre_noir(b, epaisseur=3):
+def cadre_noir(b: bytearray, epaisseur: int = 3):
     for y in range(H):
         for x in range(W):
             if x < epaisseur or x >= W - epaisseur or y < epaisseur or y >= H - epaisseur:
                 b[y * W + x] = 1
 
 
-def lignes_hex(b):
+def lignes_hex(b: bytearray) -> list:
     out = []
     for y in range(H):
         r = bytearray()
@@ -141,7 +154,8 @@ def lignes_hex(b):
     return out
 
 
-def _nombre(n):
+def _nombre(n: int) -> str:
+    """Compteur ZPL : 'z' = 400, 'g'..'z' = multiples de 20, 'G'..'Y' = 1..19."""
     s = ""
     while n >= 400:
         s += "z"
@@ -154,7 +168,7 @@ def _nombre(n):
     return s
 
 
-def _ligne_rle(row):
+def _ligne_rle(row: str) -> str:
     if set(row) == {"0"}:
         return ","
     if set(row) == {"F"}:
@@ -178,7 +192,7 @@ def _ligne_rle(row):
     return out + queue
 
 
-def decoder(flux):
+def decoder(flux: str) -> list:
     """Décodeur indépendant du RLE ZPL, pour vérifier ce qu'on envoie."""
     out, cur, prev, n, i = [], "", "", 0, 0
     while len(out) < H and i < len(flux):
@@ -205,7 +219,7 @@ def decoder(flux):
     return out
 
 
-def vers_zpl(b):
+def vers_zpl(b: bytearray):
     lignes = lignes_hex(b)
     flux, prec = "", None
     for r in lignes:
@@ -218,7 +232,7 @@ def vers_zpl(b):
             % (W, H, total, total, RB, flux)), flux
 
 
-def png_1bit(images):
+def png_1bit(images) -> bytes:
     """Aperçu : plusieurs images 812x1218 côte à côte, séparées de 40 points gris."""
     sep = 40
     largeur = len(images) * W + (len(images) - 1) * sep
@@ -246,16 +260,17 @@ def png_1bit(images):
             + bloc(b"IDAT", zlib.compress(bytes(raw), 9)) + bloc(b"IEND", b""))
 
 
-def file_par_defaut():
+def file_par_defaut() -> str:
     r = subprocess.run(["lpstat", "-d"], capture_output=True, text=True)
     m = re.search(r":\s*(\S+)\s*$", r.stdout.strip())
     return m.group(1) if m else FILE_PAR_DEFAUT
 
 
-def main():
+def main() -> int:
     args = sys.argv[1:]
     pdf = trouver_pdf(args)
-    os.makedirs(SORTIE, exist_ok=True)
+    sortie = os.path.abspath(os.path.expanduser(valeur_arg(args, "--sortie", SORTIE)))
+    os.makedirs(sortie, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         x0, y0, fw, page_pt = repérer_cadre(pdf, tmp)
 
@@ -280,19 +295,32 @@ def main():
         zpl_f, _ = vers_zpl(fiche)
 
     fichiers = {
-        "etiquette": os.path.join(SORTIE, "etiquette-4x6.zpl"),
-        "fiche": os.path.join(SORTIE, "fiche-4x6.zpl"),
+        "etiquette": os.path.join(sortie, "etiquette-4x6.zpl"),
+        "fiche": os.path.join(sortie, "fiche-4x6.zpl"),
     }
-    open(fichiers["etiquette"], "w").write(zpl_e)
-    open(fichiers["fiche"], "w").write(zpl_f)
-    apercu = os.path.join(SORTIE, "apercu.png")
+    with open(fichiers["etiquette"], "w") as f:
+        f.write(zpl_e)
+    with open(fichiers["fiche"], "w") as f:
+        f.write(zpl_f)
+    apercu = os.path.join(sortie, "apercu.png")
     open(apercu, "wb").write(png_1bit([etiquette, fiche]))
     print("PDF :", pdf)
     print("ZPL :", fichiers["etiquette"], len(zpl_e), "octets;", fichiers["fiche"], len(zpl_f), "octets")
     print("Aperçu :", apercu)
 
+    if "--json" in args:
+        print(json.dumps({
+            "pdf": pdf,
+            "etiquette": fichiers["etiquette"],
+            "zpl_etiquette_octets": len(zpl_e),
+            "fiche": fichiers["fiche"],
+            "zpl_fiche_octets": len(zpl_f),
+            "apercu": apercu,
+            "sortie": sortie,
+        }, ensure_ascii=False))
+
     if "--sans-impression" in args:
-        return
+        return 0
     if len(zpl_e) > 60000 or len(zpl_f) > 60000:
         erreur("Fichier ZPL trop gros (> 60 Ko) : l'imprimante le tronquerait. Rien imprimé.")
 
@@ -304,7 +332,7 @@ def main():
             ["Annuler", "Étiquette + fiche", "Étiquette seule"], "Étiquette seule")
         if choix is None or choix == "Annuler":
             print("Annulé, rien imprimé.")
-            return
+            return 0
     file_ = file_par_defaut()
     envois = [fichiers["etiquette"]] + ([fichiers["fiche"]] if choix == "Étiquette + fiche" else [])
     for f in envois:
@@ -316,7 +344,8 @@ def main():
         subprocess.run(["osascript", "-e",
                         'display notification "%d étiquette(s) envoyée(s) à l\'imprimante" with title "Étiquette RP425"'
                         % len(envois)], capture_output=True)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

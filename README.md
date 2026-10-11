@@ -40,9 +40,34 @@ Tu obtiens `Imprimer étiquette.app`. Double-clic, ou glisse le PDF dessus. Sans
 ```bash
 python3 imprimer_etiquette.py bon-d-envoi.pdf
 python3 imprimer_etiquette.py bon-d-envoi.pdf --sans-impression   # génère seulement le ZPL et l'aperçu
+python3 imprimer_etiquette.py bon-d-envoi.pdf --sortie /tmp/sortie # écrit dans un autre dossier
+python3 imprimer_etiquette.py bon-d-envoi.pdf --json               # résumé JSON sur la sortie standard
 ```
 
-Les fichiers générés vont dans `dernier/` (ignoré par git).
+Les fichiers générés vont dans `dernier/` (ignoré par git), ou dans le
+dossier passé à `--sortie`.
+
+### Options
+
+| Option | Effet |
+|---|---|
+| `--sans-impression` | Génère le ZPL et l'aperçu, n'imprime rien. |
+| `--sans-dialogue` | Supprime les fenêtres macOS (impression silencieuse). |
+| `--sortie DOSSIER` | Écrit les fichiers dans DOSSIER au lieu de `dernier/`. |
+| `--json` | Imprime un résumé JSON (chemins + tailles) sur la sortie standard. |
+
+## Tests
+
+La suite de tests couvre le cœur pixel/ZPL (binarisation, compteur RLE,
+aller-retour `encoder`/`décodeur`, génération PNG 1 bit) entièrement hors
+ligne — ni poppler, ni imprimante, ni macOS requis :
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install pytest ruff
+pytest tests/ -v          # 40 tests, tous verts
+ruff check imprimer_etiquette.py tests/
+```
 
 ## Pour mettre ta propre icône
 
